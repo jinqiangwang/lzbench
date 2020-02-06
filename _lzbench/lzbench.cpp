@@ -250,14 +250,15 @@ void *alloc_and_touch(size_t size, bool must_zero) {
 }
 
 
-inline int64_t lzbench_compress(lzbench_params_t *params, std::vector<size_t>& chunk_sizes, compress_func compress, std::vector<size_t> &compr_sizes, uint8_t *inbuf, uint8_t *outbuf, size_t outsize, size_t param1, size_t param2, char* workmem)
+inline int64_t lzbench_compress(lzbench_params_t *params, std::vector<size_t>& chunk_sizes, compress_func compress, std::vector<size_t> &compr_sizes, std::vector<size_t> &padding_sizes, uint8_t *inbuf, uint8_t *outbuf, size_t outsize, size_t param1, size_t param2, char* workmem)
 {
     int64_t clen;
-    size_t outpart, part, sum = 0;
+    size_t outpart, part, padding = 0, sum = 0;
     uint8_t *start = inbuf;
     int cscount = chunk_sizes.size();
 
     compr_sizes.resize(cscount);
+    padding_sizes.resize(cscount);
 
     for (int i=0; i<cscount; i++)
     {
@@ -274,35 +275,44 @@ inline int64_t lzbench_compress(lzbench_params_t *params, std::vector<size_t>& c
             memcpy(outbuf, inbuf, part);
             clen = part;
         }
-        
+        else if (params->align_size > 0) {
+            padding = clen % params->align_size;
+            if (padding > 0) {
+                padding = params->align_size - padding;
+            }
+        }
+
+        clen += padding;
         inbuf += part;
         outbuf += clen;
         outsize -= clen;
         compr_sizes[i] = clen;
+        padding_sizes[i] = padding;
         sum += clen;
     }
     return sum;
 }
 
 
-inline int64_t lzbench_decompress(lzbench_params_t *params, std::vector<size_t>& chunk_sizes, compress_func decompress, std::vector<size_t> &compr_sizes, uint8_t *inbuf, uint8_t *outbuf, size_t param1, size_t param2, char* workmem)
+inline int64_t lzbench_decompress(lzbench_params_t *params, std::vector<size_t>& chunk_sizes, compress_func decompress, std::vector<size_t> &compr_sizes, std::vector<size_t> &padding_sizes,uint8_t *inbuf, uint8_t *outbuf, size_t param1, size_t param2, char* workmem)
 {
     int64_t dlen;
-    size_t part, sum = 0;
+    size_t part, padding, sum = 0;
     uint8_t *outstart = outbuf;
     int cscount = compr_sizes.size();
 
     for (int i=0; i<cscount; i++)
     {
         part = compr_sizes[i];
-        if (part == chunk_sizes[i]) // uncompressed
+        padding = padding_sizes[i];
+        if (padding == 0 && part == chunk_sizes[i]) // uncompressed
         {
             memcpy(outbuf, inbuf, part);
             dlen = part;
         }
         else
         {
-            dlen = decompress((char*)inbuf, part, (char*)outbuf, chunk_sizes[i], param1, param2, workmem);
+            dlen = decompress((char*)inbuf, part - padding, (char*)outbuf, chunk_sizes[i], param1, param2, workmem);
         }
         LZBENCH_PRINT(9, "DEC part=%d dlen=%d out=%d\n", (int)part, (int)dlen, (int)(outbuf - outstart));
         if (dlen <= 0) return dlen;
@@ -324,7 +334,7 @@ void lzbench_test(lzbench_params_t *params, std::vector<size_t> &file_sizes, con
     int64_t complen=0, decomplen;
     uint64_t nanosec, total_nanosec;
     std::vector<uint64_t> ctime, dtime;
-    std::vector<size_t> compr_sizes, chunk_sizes;
+    std::vector<size_t> compr_sizes, padding_sizes, chunk_sizes;
     bool decomp_error = false;
     char* workmem = NULL;
     size_t param2 = desc->additional_param;
@@ -371,7 +381,7 @@ void lzbench_test(lzbench_params_t *params, std::vector<size_t> &file_sizes, con
         do
         {
             GetTime(start_ticks);
-            complen = lzbench_compress(params, chunk_sizes, desc->compress, compr_sizes, inbuf, compbuf, comprsize, param1, param2, workmem);
+            complen = lzbench_compress(params, chunk_sizes, desc->compress, compr_sizes, padding_sizes, inbuf, compbuf, comprsize, param1, param2, workmem);
             GetTime(end_ticks);
             nanosec = GetDiffTime(rate, start_ticks, end_ticks);
             if (nanosec >= 10000) ctime.push_back(nanosec);
@@ -405,7 +415,7 @@ void lzbench_test(lzbench_params_t *params, std::vector<size_t> &file_sizes, con
         do
         {
             GetTime(start_ticks);
-            decomplen = lzbench_decompress(params, chunk_sizes, desc->decompress, compr_sizes, compbuf, decomp, param1, param2, workmem);
+            decomplen = lzbench_decompress(params, chunk_sizes, desc->decompress, compr_sizes, padding_sizes, compbuf, decomp, param1, param2, workmem);
             GetTime(end_ticks);
             nanosec = GetDiffTime(rate, start_ticks, end_ticks);
             if (nanosec >= 10000) dtime.push_back(nanosec);
@@ -734,6 +744,7 @@ void usage(lzbench_params_t* params)
     fprintf(stderr, " -v    disable progress information\n");
     fprintf(stderr, " -x    disable real-time process priority\n");
     fprintf(stderr, " -z    show (de)compression times instead of speed\n");
+    fprintf(stderr, " -a#   align compressed buffer to # KB (0=do not align, #=align to # KB, default=0)\n");
     fprintf(stderr,"\nExample usage:\n");
     fprintf(stderr,"  " PROGNAME " -ezstd filename = selects all levels of zstd\n");
     fprintf(stderr,"  " PROGNAME " -ebrotli,2,5/zstd filename = selects levels 2 & 5 of brotli and zstd\n");
@@ -786,6 +797,9 @@ int main( int argc, char** argv)
         while ((*numPtr >='0') && (*numPtr <='9')) { number *= 10;  number += *numPtr - '0'; numPtr++; }
         switch (argument[0])
         {
+        case 'a':
+            params->align_size = number << 10;
+            break;
         case 'b':
             params->chunk_size = number << 10;
             break;
@@ -927,9 +941,9 @@ int main( int argc, char** argv)
         result = lzbench_main(params, inFileNames, ifnIdx, encoder_list);
 
     if (params->chunk_size > 10 * (1<<20)) {
-        LZBENCH_PRINT(2, "done... (cIters=%d dIters=%d cTime=%.1f dTime=%.1f chunkSize=%dMB cSpeed=%dMB)\n", params->c_iters, params->d_iters, params->cmintime/1000.0, params->dmintime/1000.0, (int)(params->chunk_size >> 20), params->cspeed);
+        LZBENCH_PRINT(2, "done... (cIters=%d dIters=%d cTime=%.1f dTime=%.1f chunkSize=%dMB alignSize=%dKB cSpeed=%dMB)\n", params->c_iters, params->d_iters, params->cmintime/1000.0, params->dmintime/1000.0, (int)(params->chunk_size >> 20), params->align_size>>10, params->cspeed);
     } else {
-        LZBENCH_PRINT(2, "done... (cIters=%d dIters=%d cTime=%.1f dTime=%.1f chunkSize=%dKB cSpeed=%dMB)\n", params->c_iters, params->d_iters, params->cmintime/1000.0, params->dmintime/1000.0, (int)(params->chunk_size >> 10), params->cspeed);
+        LZBENCH_PRINT(2, "done... (cIters=%d dIters=%d cTime=%.1f dTime=%.1f chunkSize=%dKB alignSize=%dKB cSpeed=%dMB)\n", params->c_iters, params->d_iters, params->cmintime/1000.0, params->dmintime/1000.0, (int)(params->chunk_size >> 10), params->align_size>>10, params->cspeed);
     }
 
     if (sort_col <= 0) goto _clean;

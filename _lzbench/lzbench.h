@@ -97,6 +97,7 @@ typedef struct
     timetype_e timetype;
     textformat_e textformat;
     size_t chunk_size;
+    size_t align_size;
     uint32_t c_iters, d_iters, cspeed, verbose, cmintime, dmintime, cloop_time, dloop_time;
     size_t mem_limit;
     int random_read;

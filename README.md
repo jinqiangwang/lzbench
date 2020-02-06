@@ -39,6 +39,7 @@ where [input] is a file or a directory and [options] are:
  -v    disable progress information
  -x    disable real-time process priority
  -z    show (de)compression times instead of speed
+ -a#   align compressed buffer to # KB (0=do not align, #=align to # KB, default=0) 
 
 Example usage:
   lzbench -ezstd filename = selects all levels of zstd
